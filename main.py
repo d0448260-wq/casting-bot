@@ -150,56 +150,69 @@ async def get_video(message: Message, state: FSMContext):
     await state.clear()
 
 # ============================================
-# 6. ОДОБРЕНИЕ ЗАЯВКИ
-# ============================================
-# ============================================
-# 6. ОДОБРЕНИЕ ЗАЯВКИ
+# 6. ОДОБРЕНИЕ ЗАЯВКИ (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 # ============================================
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_app(callback: CallbackQuery):
     app_id = int(callback.data.split("_")[1])
     print(f"✅ Одобрена заявка #{app_id}")
     
+    # 1. ОТКРЫВАЕМ СЕССИЮ
     session = SessionLocal()
     app = session.query(Application).filter_by(id=app_id).first()
     
     if not app:
         await callback.answer("❌ Заявка не найдена!")
+        session.close()  # Закрываем сессию при ошибке
         return
     
+    # 2. МЕНЯЕМ СТАТУС И СОХРАНЯЕМ
     app.status = 'approved'
-    session.commit()
+    session.commit()  # <--- Фиксируем изменения в БД
+    
+    # 3. СОХРАНЯЕМ ВСЕ ДАННЫЕ ИЗ ОБЪЕКТА В ПЕРЕМЕННЫЕ
+    #    ПОКА ОН ЕЩЁ ПРИВЯЗАН К СЕССИИ
+    user_id = app.user_id
+    user_name = app.name
+    user_username = app.username
+    user_age = app.age
+    user_city = app.city
+    video_file_id = app.video_file_id
+    created_at = app.created_at
+    
+    # 4. ТЕПЕРЬ МОЖНО ЗАКРЫТЬ СЕССИЮ
     session.close()
+    # ============================================
     
-    # ===== ОТПРАВЛЯЕМ АНКЕТУ В ГРУППУ ДЛЯ ПРОВЕРЯЮЩИХ =====
-    user_link = f"[{app.name}](tg://user?id={app.user_id})"
+    # 5. РАБОТАЕМ С СОХРАНЁННЫМИ ДАННЫМИ
+    #    (сессия уже закрыта, но данные у нас есть)
+    user_link = f"[{user_name}](tg://user?id={user_id})"
     
-    if app.username and app.username != "Не указан":
-        username_display = f"(@{app.username})"
+    if user_username and user_username != "Не указан":
+        username_display = f"(@{user_username})"
     else:
         username_display = ""
     
     review_text = (
         f"📋 **ГОТОВАЯ АНКЕТА ДЛЯ КАСТИНГА**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎭 **Участник #{app.id}**\n"
+        f"🎭 **Участник #{app_id}**\n"
         f"👤 {user_link} {username_display}\n"
-        f"📅 Возраст: {app.age} лет\n"
-        f"📍 Город: {app.city}\n"
+        f"📅 Возраст: {user_age} лет\n"
+        f"📍 Город: {user_city}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📹 Видео-визитка прикреплена ниже\n\n"
         f"📌 **Статус:** Одобрен ✅\n"
-        f"📅 Дата: {app.created_at.strftime('%d.%m.%Y %H:%M')}"
+        f"📅 Дата: {created_at.strftime('%d.%m.%Y %H:%M')}"
     )
     
     # Отправляем видео в группу для проверяющих
     await bot.send_video(
-        chat_id=config.REVIEW_CHAT_ID,  # ← НОВАЯ ГРУППА!
-        video=app.video_file_id,
+        chat_id=config.REVIEW_CHAT_ID,
+        video=video_file_id,
         caption=review_text,
         parse_mode="Markdown"
     )
-    # ===================================================
     
     # Обновляем сообщение в группе модерации
     await callback.message.edit_caption(
@@ -211,7 +224,7 @@ async def approve_app(callback: CallbackQuery):
     # Уведомляем пользователя
     try:
         await bot.send_message(
-            app.user_id,
+            user_id,
             f"🎉 **Поздравляем, {user_link}!**\n\n"
             f"Твоя заявка #{app_id} одобрена!\n\n"
             f"📌 Твоё видео прошло отбор и отправлено на финальную проверку.\n"
@@ -222,7 +235,6 @@ async def approve_app(callback: CallbackQuery):
         print(f"Не удалось уведомить пользователя: {e}")
     
     await callback.answer("✅ Заявка одобрена и отправлена!")
-
 # ============================================
 # 7. ОТКЛОНЕНИЕ ЗАЯВКИ
 # ============================================
