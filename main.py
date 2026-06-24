@@ -33,7 +33,8 @@ async def start_cmd(message: Message, state: FSMContext):
         "1️⃣ Твоё имя и фамилия или кличка (прозвище)\n"
         "2️⃣ Возраст\n"
         "3️⃣ Город (не обязательно)\n"
-        "4️⃣ **Видео-визитка** (пришли видеофайлом)\n\n"
+        "4️⃣ **Роль**, на которую ты хочешь пройти кастинг\n"
+        "5️⃣ **Видео-визитка** (пришли видеофайлом)\n\n"
         "Готов? Напиши своё **Имя или Кличку**:",
         parse_mode="Markdown"
     )
@@ -70,6 +71,25 @@ async def get_city(message: Message, state: FSMContext):
     if city.lower() in ["нет", "пропустить", "-"]:
         city = "Не указан"
     await state.update_data(city=city)
+    
+    # ===== НОВЫЙ ВОПРОС О РОЛИ =====
+    await message.answer(
+        "🎭 **На какую роль ты хочешь пройти кастинг?**\n\n"
+        "Напиши название персонажа которого бы ты хотел озвучить:\n",
+        parse_mode="Markdown"
+    )
+    await state.set_state(CastingForm.waiting_for_role)
+
+# ============================================
+# 5. ПОЛУЧЕНИЕ РОЛИ
+# ============================================
+@dp.message(CastingForm.waiting_for_role)
+async def get_role(message: Message, state: FSMContext):
+    role = message.text.strip()
+    if not role:
+        role = "Не указана"
+    await state.update_data(role=role)
+    
     await message.answer(
         "🎥 **Теперь самое важное!**\n\n"
         "Отправь **видео-файл** с твоей визиткой.\n"
@@ -80,7 +100,7 @@ async def get_city(message: Message, state: FSMContext):
     await state.set_state(CastingForm.waiting_for_video)
 
 # ============================================
-# 5. ПОЛУЧЕНИЕ ВИДЕО И ОТПРАВКА ЗАЯВКИ
+# 6. ПОЛУЧЕНИЕ ВИДЕО И ОТПРАВКА ЗАЯВКИ
 # ============================================
 @dp.message(CastingForm.waiting_for_video)
 async def get_video(message: Message, state: FSMContext):
@@ -112,6 +132,7 @@ async def get_video(message: Message, state: FSMContext):
         name=data['name'],
         age=data['age'],
         city=data['city'],
+        role=data.get('role', 'Не указана'),  # ← ДОБАВЛЯЕМ РОЛЬ
         video_file_id=file_id,
         status='pending'
     )
@@ -126,6 +147,7 @@ async def get_video(message: Message, state: FSMContext):
         f"👤 Имя: {data['name']}\n"
         f"📅 Возраст: {data['age']}\n"
         f"📍 Город: {data['city']}\n"
+        f"🎭 Роль: {data.get('role', 'Не указана')}\n"  # ← ДОБАВЛЯЕМ РОЛЬ
         f"🆔 От: {user_link}\n"
         f"📹 Видео прикреплено ниже\n\n"
         f"📌 **Что дальше?**\n"
@@ -150,7 +172,7 @@ async def get_video(message: Message, state: FSMContext):
     await state.clear()
 
 # ============================================
-# 6. ОДОБРЕНИЕ ЗАЯВКИ
+# 7. ОДОБРЕНИЕ ЗАЯВКИ
 # ============================================
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_app(callback: CallbackQuery):
@@ -231,8 +253,9 @@ async def approve_app(callback: CallbackQuery):
         print(f"Не удалось уведомить пользователя: {e}")
     
     await callback.answer("✅ Заявка одобрена и отправлена!")
+
 # ============================================
-# 7. ОТКЛОНЕНИЕ ЗАЯВКИ
+# 8. ОТКЛОНЕНИЕ ЗАЯВКИ
 # ============================================
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_app(callback: CallbackQuery):
@@ -243,8 +266,10 @@ async def reject_app(callback: CallbackQuery):
     app = session.query(Application).filter_by(id=app_id).first()
     
     if app:
+        user_id = app.user_id
         app.status = 'rejected'
         session.commit()
+        session.close()
         
         await callback.message.edit_caption(
             caption=callback.message.caption + "\n\n❌ **ЗАЯВКА ОТКЛОНЕНА**",
@@ -254,19 +279,20 @@ async def reject_app(callback: CallbackQuery):
         
         try:
             await bot.send_message(
-                app.user_id,
+                user_id,
                 f"❌ К сожалению, твоя заявка #{app_id} не прошла кастинг.\n"
                 f"Не расстраивайся, попробуй в следующий раз! 💪",
                 parse_mode="Markdown"
             )
         except:
             pass
+    else:
+        session.close()
     
-    session.close()
     await callback.answer("Заявка отклонена.")
 
 # ============================================
-# 8. УДАЛЕНИЕ СООБЩЕНИЯ
+# 9. УДАЛЕНИЕ СООБЩЕНИЯ
 # ============================================
 @dp.callback_query(F.data.startswith("delete_"))
 async def delete_app(callback: CallbackQuery):
@@ -274,7 +300,7 @@ async def delete_app(callback: CallbackQuery):
     await callback.answer("🗑 Сообщение удалено.")
 
 # ============================================
-# 9. СТАТИСТИКА (только для админов)
+# 10. СТАТИСТИКА (только для админов)
 # ============================================
 @dp.message(Command("stats"))
 async def stats_cmd(message: Message):
@@ -297,7 +323,7 @@ async def stats_cmd(message: Message):
     )
 
 # ============================================
-# 10. КОМАНДА ДЛЯ АДМИНОВ: ПОСМОТРЕТЬ ВИДЕО
+# 11. КОМАНДА ДЛЯ АДМИНОВ: ПОСМОТРЕТЬ ВИДЕО
 # ============================================
 @dp.message(Command("video"))
 async def get_video_by_id(message: Message):
@@ -332,7 +358,7 @@ async def get_video_by_id(message: Message):
     session.close()
 
 # ============================================
-# 11. ВЕБ-СЕРВЕР ДЛЯ HEALTH CHECK (для Render)
+# 12. ВЕБ-СЕРВЕР ДЛЯ HEALTH CHECK (для Render)
 # ============================================
 async def health_check(request):
     return web.Response(text="✅ Бот работает!")
@@ -350,7 +376,7 @@ async def start_web_server():
     print(f"✅ Веб-сервер для health check запущен на порту {port}")
 
 # ============================================
-# 12. ЗАПУСК БОТА
+# 13. ЗАПУСК БОТА
 # ============================================
 async def main():
     await start_web_server()
