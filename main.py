@@ -1,13 +1,19 @@
 import asyncio
 import logging
+import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 import config
 from database import SessionLocal, Application, Vote
-from keyboards import get_moderation_keys  # ← get_vote_button УДАЛЁН!
+from keyboards import get_moderation_keys
 from states import CastingForm
+
+# ===== ДОБАВЛЯЕМ ДЛЯ ВЕБ-СЕРВЕРА =====
+from aiohttp import web
+import aiohttp
+# ======================================
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -101,15 +107,12 @@ async def get_video(message: Message, state: FSMContext):
     username = message.from_user.username
     
     if username:
-        # Если есть username — делаем ссылку с @
         user_link = f"@{username}"
         user_display = f"@{username}"
     else:
-        # Если нет username — делаем ссылку через tg://
         user_link = f"[Пользователь](tg://user?id={user_id})"
         user_display = f"ID: {user_id}"
     
-    # Сохраняем в базу (можно сохранять и то и другое)
     user_username = username if username else "Не указан"
     # ============================================
     
@@ -129,13 +132,13 @@ async def get_video(message: Message, state: FSMContext):
     app_id = new_app.id
     session.close()
     
-    # ===== ОТПРАВЛЯЕМ ЗАЯВКУ МОДЕРАТОРАМ С ССЫЛКОЙ =====
+    # ===== ОТПРАВЛЯЕМ ЗАЯВКУ МОДЕРАТОРАМ =====
     text = (
         f"🔔 **НОВАЯ ЗАЯВКА #{app_id}**\n"
         f"👤 Имя: {data['name']}\n"
         f"📅 Возраст: {data['age']}\n"
         f"📍 Город: {data['city']}\n"
-        f"🆔 От: {user_link}\n"  # ← КЛИКАБЕЛЬНАЯ ССЫЛКА!
+        f"🆔 От: {user_link}\n"
         f"📹 Видео прикреплено ниже"
     )
     
@@ -144,7 +147,7 @@ async def get_video(message: Message, state: FSMContext):
         video=file_id,
         caption=text,
         reply_markup=get_moderation_keys(app_id),
-        parse_mode="Markdown"  # ← ВАЖНО! Markdown для ссылок
+        parse_mode="Markdown"
     )
     
     await message.answer(
@@ -174,10 +177,8 @@ async def approve_app(callback: CallbackQuery):
     session.commit()
     
     # ===== ФОРМИРУЕМ ТЕКСТ С ЮЗЕРНЕЙМОМ =====
-    # Ссылка на пользователя (всегда работает)
     user_link = f"[{app.name}](tg://user?id={app.user_id})"
     
-    # Добавляем @username, если он есть
     if app.username and app.username != "Не указан":
         username_display = f"(@{app.username})"
     else:
@@ -243,14 +244,12 @@ async def reject_app(callback: CallbackQuery):
         app.status = 'rejected'
         session.commit()
         
-        # Обновляем сообщение
         await callback.message.edit_caption(
             caption=callback.message.caption + "\n\n❌ **ОТКЛОНЕНО**",
             parse_mode="Markdown",
             reply_markup=None
         )
         
-        # Уведомляем пользователя
         try:
             await bot.send_message(
                 app.user_id,
@@ -292,14 +291,12 @@ async def handle_vote(message: Message):
     
     session = SessionLocal()
     
-    # Проверяем существование участника
     app = session.query(Application).filter_by(id=app_id, status='approved').first()
     if not app:
         await message.answer("❌ Участник с таким ID не найден.")
         session.close()
         return
     
-    # Проверяем, не голосовал ли уже
     existing = session.query(Vote).filter_by(
         user_id=message.from_user.id,
         application_id=app_id
@@ -310,12 +307,10 @@ async def handle_vote(message: Message):
         session.close()
         return
     
-    # Сохраняем голос
     new_vote = Vote(user_id=message.from_user.id, application_id=app_id)
     session.add(new_vote)
     session.commit()
     
-    # Считаем голоса
     count = session.query(Vote).filter_by(application_id=app_id).count()
     session.close()
     
@@ -384,19 +379,45 @@ async def get_video_by_id(message: Message):
     session.close()
 
 # ============================================
-# 12. ЗАПУСК БОТА
+# 12. ВЕБ-СЕРВЕР ДЛЯ HEALTH CHECK (для Render)
+# ============================================
+async def health_check(request):
+    """Эндпоинт для проверки, что бот жив"""
+    return web.Response(text="✅ Бот работает!")
+
+async def start_web_server():
+    """Запускает веб-сервер на порту из переменной PORT"""
+    port = int(os.environ.get('PORT', 10000))
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"✅ Веб-сервер для health check запущен на порту {port}")
+
+# ============================================
+# 13. ЗАПУСК БОТА
 # ============================================
 async def main():
+    # Запускаем веб-сервер в фоне для health check
+    await start_web_server()
+    
+    # Запускаем бота
     await bot.delete_webhook(drop_pending_updates=True)
     print("✅ Webhook сброшен")
     print("🔄 Бот готов к работе!")
     print("=" * 50)
+    
+    # Запускаем polling в бесконечном цикле
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n⏹ Бот остановлен")
+        print("\n⏹ Бот остановлен пользователем")
     except Exception as e:
         print(f"\n❌ Ошибка: {e}")
