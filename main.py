@@ -152,6 +152,9 @@ async def get_video(message: Message, state: FSMContext):
 # ============================================
 # 6. ОДОБРЕНИЕ ЗАЯВКИ
 # ============================================
+# ============================================
+# 6. ОДОБРЕНИЕ ЗАЯВКИ
+# ============================================
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_app(callback: CallbackQuery):
     app_id = int(callback.data.split("_")[1])
@@ -168,28 +171,57 @@ async def approve_app(callback: CallbackQuery):
     session.commit()
     session.close()
     
-    # Обновляем сообщение в группе
+    # ===== ОТПРАВЛЯЕМ АНКЕТУ В ГРУППУ ДЛЯ ПРОВЕРЯЮЩИХ =====
+    user_link = f"[{app.name}](tg://user?id={app.user_id})"
+    
+    if app.username and app.username != "Не указан":
+        username_display = f"(@{app.username})"
+    else:
+        username_display = ""
+    
+    review_text = (
+        f"📋 **ГОТОВАЯ АНКЕТА ДЛЯ КАСТИНГА**\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎭 **Участник #{app.id}**\n"
+        f"👤 {user_link} {username_display}\n"
+        f"📅 Возраст: {app.age} лет\n"
+        f"📍 Город: {app.city}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📹 Видео-визитка прикреплена ниже\n\n"
+        f"📌 **Статус:** Одобрен ✅\n"
+        f"📅 Дата: {app.created_at.strftime('%d.%m.%Y %H:%M')}"
+    )
+    
+    # Отправляем видео в группу для проверяющих
+    await bot.send_video(
+        chat_id=config.REVIEW_CHAT_ID,  # ← НОВАЯ ГРУППА!
+        video=app.video_file_id,
+        caption=review_text,
+        parse_mode="Markdown"
+    )
+    # ===================================================
+    
+    # Обновляем сообщение в группе модерации
     await callback.message.edit_caption(
-        caption=callback.message.caption + "\n\n✅ **ЗАЯВКА ОДОБРЕНА**",
+        caption=callback.message.caption + "\n\n✅ **ЗАЯВКА ОДОБРЕНА И ОТПРАВЛЕНА В ГРУППУ ДЛЯ ПРОВЕРЯЮЩИХ**",
         parse_mode="Markdown",
         reply_markup=None
     )
     
     # Уведомляем пользователя
     try:
-        user_link = f"[{app.name}](tg://user?id={app.user_id})"
         await bot.send_message(
             app.user_id,
             f"🎉 **Поздравляем, {user_link}!**\n\n"
             f"Твоя заявка #{app_id} одобрена!\n\n"
-            f"📌 Твоё видео прошло отбор.\n"
+            f"📌 Твоё видео прошло отбор и отправлено на финальную проверку.\n"
             f"Следи за новостями! 👀",
             parse_mode="Markdown"
         )
     except Exception as e:
         print(f"Не удалось уведомить пользователя: {e}")
     
-    await callback.answer("✅ Заявка одобрена!")
+    await callback.answer("✅ Заявка одобрена и отправлена!")
 
 # ============================================
 # 7. ОТКЛОНЕНИЕ ЗАЯВКИ
