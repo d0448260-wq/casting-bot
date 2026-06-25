@@ -75,8 +75,7 @@ async def get_city(message: Message, state: FSMContext):
     
     await message.answer(
         "🎭 **На какую роль ты хочешь пройти кастинг?**\n\n"
-        "Напиши название роли или направления:\n"
-        "Например: *Главный герой*, *Злодей*, *Ведущий* и т.д.",
+        "Напиши название роли или направления:\n",
         parse_mode="Markdown"
     )
     await state.set_state(CastingForm.waiting_for_role)
