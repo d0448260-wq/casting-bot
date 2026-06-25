@@ -1,12 +1,13 @@
 import asyncio
 import logging
 import os
+import gc  # ← Добавляем для сборки мусора
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery
 import config
-from database import SessionLocal, Application
+from database import get_session, Application
 from keyboards import get_moderation_keys
 from states import CastingForm
 from aiohttp import web
@@ -18,7 +19,7 @@ bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
 print("=" * 50)
-print("🚀 БОТ ДЛЯ КАСТИНГА ЗАПУЩЕН!")
+print("🚀 ОПТИМИЗИРОВАННЫЙ БОТ ДЛЯ КАСТИНГА ЗАПУЩЕН!")
 print("=" * 50)
 
 # ============================================
@@ -30,10 +31,10 @@ async def start_cmd(message: Message, state: FSMContext):
     await message.answer(
         "🎬 **Привет! Ты хочешь пройти кастинг?**\n\n"
         "📝 Я задам тебе несколько вопросов:\n"
-        "1️⃣ Твоё имя и фамилия или кличка (прозвище)\n"
+        "1️⃣ Твоё имя и фамилия или кличка\n"
         "2️⃣ Возраст\n"
         "3️⃣ Город (не обязательно)\n"
-        "4️⃣ **Роль**, на которую ты хочешь пройти кастинг\n"
+        "4️⃣ Роль\n"
         "5️⃣ **Видео-визитка** (пришли видеофайлом)\n\n"
         "Готов? Напиши своё **Имя или Кличку**:",
         parse_mode="Markdown"
@@ -72,10 +73,10 @@ async def get_city(message: Message, state: FSMContext):
         city = "Не указан"
     await state.update_data(city=city)
     
-    # ===== НОВЫЙ ВОПРОС О РОЛИ =====
     await message.answer(
         "🎭 **На какую роль ты хочешь пройти кастинг?**\n\n"
-        "Напиши название персонажа которого бы ты хотел озвучить:\n",
+        "Напиши название роли или направления:\n"
+        "Например: *Главный герой*, *Злодей*, *Ведущий* и т.д.",
         parse_mode="Markdown"
     )
     await state.set_state(CastingForm.waiting_for_role)
@@ -100,76 +101,69 @@ async def get_role(message: Message, state: FSMContext):
     await state.set_state(CastingForm.waiting_for_video)
 
 # ============================================
-# 6. ПОЛУЧЕНИЕ ВИДЕО И ОТПРАВКА ЗАЯВКИ
+# 6. ПОЛУЧЕНИЕ ВИДЕО (БЕЗ СОХРАНЕНИЯ НА ДИСК!)
 # ============================================
 @dp.message(CastingForm.waiting_for_video)
 async def get_video(message: Message, state: FSMContext):
     if not message.video:
-        await message.answer(
-            "❌ Это не видео!\n"
-            "Пожалуйста, отправь видео-файл (MP4, AVI и т.д.)"
-        )
+        await message.answer("❌ Это не видео! Отправь видео-файл.")
         return
     
     video = message.video
     file_id = video.file_id
     
-    print(f"🎥 Получено видео: {video.file_size} байт, {video.duration} сек")
+    print(f"🎥 Получено видео (file_id): {file_id[:20]}... ({video.file_size} байт, {video.duration} сек)")
     
     data = await state.get_data()
     
-    # Ссылка на пользователя
     user_id = message.from_user.id
     username = message.from_user.username
     user_link = f"@{username}" if username else f"[Пользователь](tg://user?id={user_id})"
     user_username = username if username else "Не указан"
     
-    # Сохраняем в базу
-    session = SessionLocal()
-    new_app = Application(
-        user_id=user_id,
-        username=user_username,
-        name=data['name'],
-        age=data['age'],
-        city=data['city'],
-        role=data.get('role', 'Не указана'),  # ← ДОБАВЛЯЕМ РОЛЬ
-        video_file_id=file_id,
-        status='pending'
-    )
-    session.add(new_app)
-    session.commit()
-    app_id = new_app.id
-    session.close()
+    # ===== СОХРАНЯЕМ ТОЛЬКО В БАЗУ (НЕ НА ДИСК!) =====
+    with get_session() as session:
+        new_app = Application(
+            user_id=user_id,
+            username=user_username,
+            name=data['name'],
+            age=data['age'],
+            city=data['city'],
+            role=data.get('role', 'Не указана'),
+            video_file_id=file_id,  # ← ТОЛЬКО ID!
+            status='pending'
+        )
+        session.add(new_app)
+        session.flush()
+        app_id = new_app.id
+    # ================================================
     
-    # Отправляем заявку модераторам
     text = (
         f"🔔 **НОВАЯ ЗАЯВКА #{app_id}**\n"
         f"👤 Имя: {data['name']}\n"
         f"📅 Возраст: {data['age']}\n"
         f"📍 Город: {data['city']}\n"
-        f"🎭 Роль: {data.get('role', 'Не указана')}\n"  # ← ДОБАВЛЯЕМ РОЛЬ
+        f"🎭 Роль: {data.get('role', 'Не указана')}\n"
         f"🆔 От: {user_link}\n"
-        f"📹 Видео прикреплено ниже\n\n"
-        f"📌 **Что дальше?**\n"
-        f"1️⃣ Посмотрите видео\n"
-        f"2️⃣ Примите решение: Одобрить или Отклонить"
+        f"📹 Видео прикреплено ниже"
     )
     
+    # ===== ОТПРАВЛЯЕМ ВИДЕО ПО ID (БЕЗ СКАЧИВАНИЯ) =====
     await bot.send_video(
         chat_id=config.MODERATION_CHAT_ID,
-        video=file_id,
+        video=file_id,  # ← ПРОСТО ID!
         caption=text,
         reply_markup=get_moderation_keys(app_id),
         parse_mode="Markdown"
     )
+    # =================================================
     
-    await message.answer(
-        "✅ **Заявка отправлена на проверку!**\n\n"
-        "Модераторы посмотрят твоё видео и примут решение.\n"
-        "Жди уведомления в этом чате. Удачи! 🍀",
-        parse_mode="Markdown"
-    )
+    await message.answer("✅ **Заявка отправлена на проверку!** Жди решения.")
     await state.clear()
+    
+    # ===== ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПАМЯТИ =====
+    gc.collect()
+    # ========================================
 
 # ============================================
 # 7. ОДОБРЕНИЕ ЗАЯВКИ
@@ -179,80 +173,68 @@ async def approve_app(callback: CallbackQuery):
     app_id = int(callback.data.split("_")[1])
     print(f"✅ Одобрена заявка #{app_id}")
     
-    session = SessionLocal()
-    app = session.query(Application).filter_by(id=app_id).first()
-    
-    if not app:
-        await callback.answer("❌ Заявка не найдена!")
-        session.close()
-        return
-    
-    app.status = 'approved'
-    session.commit()
-    
-    # ===== СОХРАНЯЕМ ВСЕ ДАННЫЕ ДО ЗАКРЫТИЯ СЕССИИ =====
-    user_id = app.user_id
-    user_name = app.name
-    user_username = app.username
-    user_age = app.age
-    user_city = app.city
-    user_role = app.role  # ← ДОБАВЛЯЕМ РОЛЬ
-    video_file_id = app.video_file_id
-    created_at = app.created_at
-    
-    session.close()
-    # ======================================================
+    with get_session() as session:
+        app = session.query(Application).filter_by(id=app_id).first()
+        if not app:
+            await callback.answer("❌ Заявка не найдена!")
+            return
+        
+        app.status = 'approved'
+        session.flush()
+        
+        # Сохраняем данные
+        user_id = app.user_id
+        user_name = app.name
+        user_username = app.username
+        user_age = app.age
+        user_city = app.city
+        user_role = app.role
+        video_file_id = app.video_file_id
+        created_at = app.created_at
     
     user_link = f"[{user_name}](tg://user?id={user_id})"
-    
-    if user_username and user_username != "Не указан":
-        username_display = f"(@{user_username})"
-    else:
-        username_display = ""
+    username_display = f"(@{user_username})" if user_username and user_username != "Не указан" else ""
     
     review_text = (
-        f"📋 **ГОТОВАЯ АНКЕТА ДЛЯ КАСТИНГА**\n"
+        f"📋 **ГОТОВАЯ АНКЕТА**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎭 **Участник #{app_id}**\n"
         f"👤 {user_link} {username_display}\n"
         f"📅 Возраст: {user_age} лет\n"
         f"📍 Город: {user_city}\n"
-        f"🎯 Роль: {user_role}\n"  # ← ДОБАВЛЯЕМ РОЛЬ
+        f"🎯 Роль: {user_role}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📹 Видео-визитка прикреплена ниже\n\n"
-        f"📌 **Статус:** Одобрен ✅\n"
+        f"📹 Видео прикреплено ниже\n"
+        f"📌 Статус: ✅ Одобрен\n"
         f"📅 Дата: {created_at.strftime('%d.%m.%Y %H:%M')}"
     )
     
-    # Отправляем видео в группу для проверяющих
+    # ===== ОТПРАВЛЯЕМ ПО ID (БЕЗ СКАЧИВАНИЯ) =====
     await bot.send_video(
         chat_id=config.REVIEW_CHAT_ID,
         video=video_file_id,
         caption=review_text,
         parse_mode="Markdown"
     )
+    # ===========================================
     
-    # Обновляем сообщение в группе модерации
     await callback.message.edit_caption(
-        caption=callback.message.caption + "\n\n✅ **ЗАЯВКА ОДОБРЕНА И ОТПРАВЛЕНА В ГРУППУ ДЛЯ ПРОВЕРЯЮЩИХ**",
+        caption=callback.message.caption + "\n\n✅ **ЗАЯВКА ОДОБРЕНА**",
         parse_mode="Markdown",
         reply_markup=None
     )
     
-    # Уведомляем пользователя
     try:
         await bot.send_message(
             user_id,
-            f"🎉 **Поздравляем, {user_link}!**\n\n"
-            f"Твоя заявка #{app_id} на роль *{user_role}* одобрена!\n\n"
-            f"📌 Твоё видео прошло отбор и отправлено на финальную проверку.\n"
-            f"Следи за новостями! 👀",
+            f"🎉 **Поздравляем!** Твоя заявка #{app_id} на роль *{user_role}* одобрена!",
             parse_mode="Markdown"
         )
-    except Exception as e:
-        print(f"Не удалось уведомить пользователя: {e}")
+    except:
+        pass
     
-    await callback.answer("✅ Заявка одобрена и отправлена!")
+    await callback.answer("✅ Заявка одобрена!")
+    gc.collect()  # Очистка памяти
 
 # ============================================
 # 8. ОТКЛОНЕНИЕ ЗАЯВКИ
@@ -262,34 +244,30 @@ async def reject_app(callback: CallbackQuery):
     app_id = int(callback.data.split("_")[1])
     print(f"❌ Отклонена заявка #{app_id}")
     
-    session = SessionLocal()
-    app = session.query(Application).filter_by(id=app_id).first()
+    with get_session() as session:
+        app = session.query(Application).filter_by(id=app_id).first()
+        if app:
+            user_id = app.user_id
+            app.status = 'rejected'
+            session.flush()
     
-    if app:
-        user_id = app.user_id
-        app.status = 'rejected'
-        session.commit()
-        session.close()
-        
-        await callback.message.edit_caption(
-            caption=callback.message.caption + "\n\n❌ **ЗАЯВКА ОТКЛОНЕНА**",
-            parse_mode="Markdown",
-            reply_markup=None
+    await callback.message.edit_caption(
+        caption=callback.message.caption + "\n\n❌ **ЗАЯВКА ОТКЛОНЕНА**",
+        parse_mode="Markdown",
+        reply_markup=None
+    )
+    
+    try:
+        await bot.send_message(
+            user_id,
+            f"❌ К сожалению, твоя заявка #{app_id} не прошла кастинг.",
+            parse_mode="Markdown"
         )
-        
-        try:
-            await bot.send_message(
-                user_id,
-                f"❌ К сожалению, твоя заявка #{app_id} не прошла кастинг.\n"
-                f"Не расстраивайся, попробуй в следующий раз! 💪",
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-    else:
-        session.close()
+    except:
+        pass
     
     await callback.answer("Заявка отклонена.")
+    gc.collect()
 
 # ============================================
 # 9. УДАЛЕНИЕ СООБЩЕНИЯ
@@ -298,32 +276,32 @@ async def reject_app(callback: CallbackQuery):
 async def delete_app(callback: CallbackQuery):
     await callback.message.delete()
     await callback.answer("🗑 Сообщение удалено.")
+    gc.collect()
 
 # ============================================
-# 10. СТАТИСТИКА (только для админов)
+# 10. СТАТИСТИКА
 # ============================================
 @dp.message(Command("stats"))
 async def stats_cmd(message: Message):
     if message.from_user.id not in config.ADMIN_IDS:
-        await message.answer("❌ У тебя нет прав для этой команды.")
+        await message.answer("❌ Нет прав.")
         return
     
-    session = SessionLocal()
-    total = session.query(Application).count()
-    approved = session.query(Application).filter_by(status='approved').count()
-    pending = session.query(Application).filter_by(status='pending').count()
-    session.close()
+    with get_session() as session:
+        total = session.query(Application).count()
+        approved = session.query(Application).filter_by(status='approved').count()
+        pending = session.query(Application).filter_by(status='pending').count()
     
     await message.answer(
-        f"📊 **Статистика кастинга:**\n"
-        f"Всего заявок: {total}\n"
+        f"📊 **Статистика:**\n"
+        f"Всего: {total}\n"
         f"Одобрено: {approved}\n"
-        f"Ожидают проверки: {pending}",
+        f"Ожидают: {pending}",
         parse_mode="Markdown"
     )
 
 # ============================================
-# 11. КОМАНДА ДЛЯ АДМИНОВ: ПОСМОТРЕТЬ ВИДЕО
+# 11. КОМАНДА /video
 # ============================================
 @dp.message(Command("video"))
 async def get_video_by_id(message: Message):
@@ -335,30 +313,28 @@ async def get_video_by_id(message: Message):
         parts = message.text.split()
         app_id = int(parts[1])
     except:
-        await message.answer("❌ Используй: `/video 5` (где 5 - ID заявки)", parse_mode="Markdown")
+        await message.answer("❌ Используй: `/video 5`", parse_mode="Markdown")
         return
     
-    session = SessionLocal()
-    app = session.query(Application).filter_by(id=app_id).first()
-    
-    if not app:
-        await message.answer("❌ Заявка не найдена.")
-        session.close()
-        return
-    
-    if not app.video_file_id:
-        await message.answer("❌ У заявки нет видео.")
-        session.close()
-        return
+    with get_session() as session:
+        app = session.query(Application).filter_by(id=app_id).first()
+        if not app:
+            await message.answer("❌ Заявка не найдена.")
+            return
+        if not app.video_file_id:
+            await message.answer("❌ У заявки нет видео.")
+            return
+        
+        video_id = app.video_file_id
+        user_name = app.name
     
     await message.answer_video(
-        video=app.video_file_id,
-        caption=f"🎥 Видео участника #{app_id}\n👤 {app.name}"
+        video=video_id,
+        caption=f"🎥 Видео участника #{app_id}\n👤 {user_name}"
     )
-    session.close()
 
 # ============================================
-# 12. ВЕБ-СЕРВЕР ДЛЯ HEALTH CHECK (для Render)
+# 12. ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ============================================
 async def health_check(request):
     return web.Response(text="✅ Бот работает!")
@@ -373,10 +349,10 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"✅ Веб-сервер для health check запущен на порту {port}")
+    print(f"✅ Веб-сервер запущен на порту {port}")
 
 # ============================================
-# 13. ЗАПУСК БОТА
+# 13. ЗАПУСК
 # ============================================
 async def main():
     await start_web_server()
