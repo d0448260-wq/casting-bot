@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-import gc  # ← Добавляем для сборки мусора
+import gc
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -12,22 +12,26 @@ from keyboards import get_moderation_keys
 from states import CastingForm
 from aiohttp import web
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
+# ===== НАСТРОЙКА ЛОГИРОВАНИЯ =====
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 
-print("=" * 50)
-print("🚀 ОПТИМИЗИРОВАННЫЙ БОТ ДЛЯ КАСТИНГА ЗАПУЩЕН!")
-print("=" * 50)
+logger.info("=" * 50)
+logger.info("🚀 ОПТИМИЗИРОВАННЫЙ БОТ ДЛЯ КАСТИНГА ЗАПУЩЕН!")
+logger.info("=" * 50)
 
 # ============================================
 # 1. КОМАНДА /start
 # ============================================
 @dp.message(CommandStart())
 async def start_cmd(message: Message, state: FSMContext):
-    print(f"✅ Получена команда /start от {message.from_user.id}")
+    logger.info(f"✅ Получена команда /start от {message.from_user.id}")
     await message.answer(
         "🎬 **Привет! Ты хочешь пройти кастинг?**\n\n"
         "📝 Я задам тебе несколько вопросов:\n"
@@ -46,7 +50,7 @@ async def start_cmd(message: Message, state: FSMContext):
 # ============================================
 @dp.message(CastingForm.waiting_for_name)
 async def get_name(message: Message, state: FSMContext):
-    print(f"📝 Получено имя: {message.text}")
+    logger.info(f"📝 Получено имя: {message.text}")
     await state.update_data(name=message.text)
     await message.answer("📅 Сколько тебе лет? (Напиши число)")
     await state.set_state(CastingForm.waiting_for_age)
@@ -100,7 +104,7 @@ async def get_role(message: Message, state: FSMContext):
     await state.set_state(CastingForm.waiting_for_video)
 
 # ============================================
-# 6. ПОЛУЧЕНИЕ ВИДЕО (БЕЗ СОХРАНЕНИЯ НА ДИСК!)
+# 6. ПОЛУЧЕНИЕ ВИДЕО
 # ============================================
 @dp.message(CastingForm.waiting_for_video)
 async def get_video(message: Message, state: FSMContext):
@@ -111,7 +115,7 @@ async def get_video(message: Message, state: FSMContext):
     video = message.video
     file_id = video.file_id
     
-    print(f"🎥 Получено видео (file_id): {file_id[:20]}... ({video.file_size} байт, {video.duration} сек)")
+    logger.info(f"🎥 Получено видео (file_id): {file_id[:20]}... ({video.file_size} байт, {video.duration} сек)")
     
     data = await state.get_data()
     
@@ -120,7 +124,6 @@ async def get_video(message: Message, state: FSMContext):
     user_link = f"@{username}" if username else f"[Пользователь](tg://user?id={user_id})"
     user_username = username if username else "Не указан"
     
-    # ===== СОХРАНЯЕМ ТОЛЬКО В БАЗУ (НЕ НА ДИСК!) =====
     with get_session() as session:
         new_app = Application(
             user_id=user_id,
@@ -129,13 +132,14 @@ async def get_video(message: Message, state: FSMContext):
             age=data['age'],
             city=data['city'],
             role=data.get('role', 'Не указана'),
-            video_file_id=file_id,  # ← ТОЛЬКО ID!
+            video_file_id=file_id,
             status='pending'
         )
         session.add(new_app)
         session.flush()
         app_id = new_app.id
-    # ================================================
+    
+    logger.info(f"📝 Заявка #{app_id} создана для пользователя {user_id}")
     
     text = (
         f"🔔 **НОВАЯ ЗАЯВКА #{app_id}**\n"
@@ -147,22 +151,21 @@ async def get_video(message: Message, state: FSMContext):
         f"📹 Видео прикреплено ниже"
     )
     
-    # ===== ОТПРАВЛЯЕМ ВИДЕО ПО ID (БЕЗ СКАЧИВАНИЯ) =====
     await bot.send_video(
         chat_id=config.MODERATION_CHAT_ID,
-        video=file_id,  # ← ПРОСТО ID!
+        video=file_id,
         caption=text,
         reply_markup=get_moderation_keys(app_id),
         parse_mode="Markdown"
     )
-    # =================================================
+    
+    logger.info(f"📤 Заявка #{app_id} отправлена в группу модерации")
     
     await message.answer("✅ **Заявка отправлена на проверку!** Жди решения.")
     await state.clear()
     
-    # ===== ПРИНУДИТЕЛЬНАЯ ОЧИСТКА ПАМЯТИ =====
     gc.collect()
-    # ========================================
+    logger.info(f"🧹 Память очищена после заявки #{app_id}")
 
 # ============================================
 # 7. ОДОБРЕНИЕ ЗАЯВКИ
@@ -170,7 +173,7 @@ async def get_video(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_app(callback: CallbackQuery):
     app_id = int(callback.data.split("_")[1])
-    print(f"✅ Одобрена заявка #{app_id}")
+    logger.info(f"✅ Одобрена заявка #{app_id}")
     
     with get_session() as session:
         app = session.query(Application).filter_by(id=app_id).first()
@@ -181,7 +184,6 @@ async def approve_app(callback: CallbackQuery):
         app.status = 'approved'
         session.flush()
         
-        # Сохраняем данные
         user_id = app.user_id
         user_name = app.name
         user_username = app.username
@@ -190,6 +192,8 @@ async def approve_app(callback: CallbackQuery):
         user_role = app.role
         video_file_id = app.video_file_id
         created_at = app.created_at
+    
+    logger.info(f"📝 Данные заявки #{app_id} сохранены: {user_name}")
     
     user_link = f"[{user_name}](tg://user?id={user_id})"
     username_display = f"(@{user_username})" if user_username and user_username != "Не указан" else ""
@@ -208,14 +212,14 @@ async def approve_app(callback: CallbackQuery):
         f"📅 Дата: {created_at.strftime('%d.%m.%Y %H:%M')}"
     )
     
-    # ===== ОТПРАВЛЯЕМ ПО ID (БЕЗ СКАЧИВАНИЯ) =====
     await bot.send_video(
         chat_id=config.REVIEW_CHAT_ID,
         video=video_file_id,
         caption=review_text,
         parse_mode="Markdown"
     )
-    # ===========================================
+    
+    logger.info(f"📤 Заявка #{app_id} отправлена в группу проверяющих")
     
     await callback.message.edit_caption(
         caption=callback.message.caption + "\n\n✅ **ЗАЯВКА ОДОБРЕНА**",
@@ -229,11 +233,13 @@ async def approve_app(callback: CallbackQuery):
             f"🎉 **Поздравляем!** Твоя заявка #{app_id} на роль *{user_role}* одобрена!",
             parse_mode="Markdown"
         )
-    except:
-        pass
+        logger.info(f"📨 Уведомление отправлено пользователю {user_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке уведомления: {e}")
     
     await callback.answer("✅ Заявка одобрена!")
-    gc.collect()  # Очистка памяти
+    gc.collect()
+    logger.info(f"🧹 Память очищена после одобрения #{app_id}")
 
 # ============================================
 # 8. ОТКЛОНЕНИЕ ЗАЯВКИ
@@ -241,7 +247,7 @@ async def approve_app(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_app(callback: CallbackQuery):
     app_id = int(callback.data.split("_")[1])
-    print(f"❌ Отклонена заявка #{app_id}")
+    logger.info(f"❌ Отклонена заявка #{app_id}")
     
     with get_session() as session:
         app = session.query(Application).filter_by(id=app_id).first()
@@ -249,6 +255,7 @@ async def reject_app(callback: CallbackQuery):
             user_id = app.user_id
             app.status = 'rejected'
             session.flush()
+            logger.info(f"📝 Статус заявки #{app_id} изменён на 'rejected'")
     
     await callback.message.edit_caption(
         caption=callback.message.caption + "\n\n❌ **ЗАЯВКА ОТКЛОНЕНА**",
@@ -262,8 +269,9 @@ async def reject_app(callback: CallbackQuery):
             f"❌ К сожалению, твоя заявка #{app_id} не прошла кастинг.",
             parse_mode="Markdown"
         )
-    except:
-        pass
+        logger.info(f"📨 Уведомление об отклонении отправлено пользователю {user_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при отправке уведомления: {e}")
     
     await callback.answer("Заявка отклонена.")
     gc.collect()
@@ -274,6 +282,7 @@ async def reject_app(callback: CallbackQuery):
 @dp.callback_query(F.data.startswith("delete_"))
 async def delete_app(callback: CallbackQuery):
     await callback.message.delete()
+    logger.info("🗑 Сообщение удалено")
     await callback.answer("🗑 Сообщение удалено.")
     gc.collect()
 
@@ -290,6 +299,8 @@ async def stats_cmd(message: Message):
         total = session.query(Application).count()
         approved = session.query(Application).filter_by(status='approved').count()
         pending = session.query(Application).filter_by(status='pending').count()
+    
+    logger.info(f"📊 Статистика запрошена: всего {total}, одобрено {approved}, ожидают {pending}")
     
     await message.answer(
         f"📊 **Статистика:**\n"
@@ -327,13 +338,15 @@ async def get_video_by_id(message: Message):
         video_id = app.video_file_id
         user_name = app.name
     
+    logger.info(f"🎥 Видео #{app_id} отправлено админу")
+    
     await message.answer_video(
         video=video_id,
         caption=f"🎥 Видео участника #{app_id}\n👤 {user_name}"
     )
 
 # ============================================
-# 12. ВЕБ-СЕРВЕР ДЛЯ RENDER
+# 12. ВЕБ-СЕРВЕР
 # ============================================
 async def health_check(request):
     return web.Response(text="✅ Бот работает!")
@@ -348,7 +361,7 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"✅ Веб-сервер запущен на порту {port}")
+    logger.info(f"✅ Веб-сервер запущен на порту {port}")
 
 # ============================================
 # 13. ЗАПУСК
@@ -356,15 +369,15 @@ async def start_web_server():
 async def main():
     await start_web_server()
     await bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Webhook сброшен")
-    print("🔄 Бот готов к работе!")
-    print("=" * 50)
+    logger.info("✅ Webhook сброшен")
+    logger.info("🔄 Бот готов к работе!")
+    logger.info("=" * 50)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n⏹ Бот остановлен")
+        logger.info("\n⏹ Бот остановлен")
     except Exception as e:
-        print(f"\n❌ Ошибка: {e}")
+        logger.error(f"\n❌ Ошибка: {e}")
